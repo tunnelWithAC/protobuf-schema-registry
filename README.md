@@ -1,0 +1,1 @@
+# protobuf-schema-registry
