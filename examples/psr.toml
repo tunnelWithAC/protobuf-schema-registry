@@ -1,0 +1,41 @@
+# Draft manifest schema for the psr CLI — see design discussion on issue #3:
+# https://github.com/tunnelWithAC/protobuf-schema-registry/issues/3
+#
+# This is a design sketch, not yet implemented. Several fields below are
+# still open questions (see PR description) and may change.
+
+[package]
+name        = "example-service"      # optional — only needed if this repo also *publishes* a package
+version     = "0.1.0"
+description = "Example service protobuf schemas"
+
+[registries]
+default = "https://registry.protobuf-schema-registry.dev"
+# internal = "https://schemas.internal.example.com"   # additional registries, referenced by name below
+
+[dependencies]
+"acme/common"  = "^1.2"                                          # semver range, resolved via [registries].default
+"acme/billing" = { version = "2.0.0", registry = "internal" }    # explicit registry override
+# "acme/local"   = { path = "../local-proto" }                   # local dev override (open question)
+
+[toolchain]
+protoc = "27.2"          # omit entirely if we go the protocompile in-process-parser route
+
+[toolchain.plugins.go]
+plugin  = "protoc-gen-go"
+version = "1.34.2"
+
+[toolchain.plugins.go-grpc]
+plugin  = "protoc-gen-go-grpc"
+version = "1.5.1"
+
+[[generate]]
+language = "go"
+out      = "gen/go"
+plugins  = ["go", "go-grpc"]
+options  = { paths = "source_relative" }
+
+[[generate]]
+language = "python"
+out      = "gen/python"
+plugins  = ["python"]
