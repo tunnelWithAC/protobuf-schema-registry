@@ -14,6 +14,9 @@ import (
 // TestBuildRequest_AcceptedByPlugin checks that the CodeGeneratorRequest we build is
 // actually well-formed by feeding it to a real protoc-gen-go, including a transitive
 // well-known-type import. Skipped when protoc-gen-go is not installed.
+//
+// The ordering/dedup invariants of req.ProtoFile are covered unconditionally by
+// TestBuildRequest_ProtoFileOrderAndDedup, which needs no external binary.
 func TestBuildRequest_AcceptedByPlugin(t *testing.T) {
 	plugin, err := exec.LookPath("protoc-gen-go")
 	if err != nil {
@@ -39,21 +42,6 @@ message Greeting { string message = 1; common.Stamp when = 2; }
 	req, err := BuildRequest(context.Background(), protoDir, []string{protoDir}, encodeParameter(map[string]string{"paths": "source_relative"}))
 	if err != nil {
 		t.Fatalf("BuildRequest() error = %v", err)
-	}
-
-	// Dependencies must precede dependents, and well-known imports must be included.
-	var names []string
-	for _, f := range req.ProtoFile {
-		names = append(names, f.GetName())
-	}
-	want := []string{"google/protobuf/timestamp.proto", "common/ts.proto", "greeting.proto"}
-	if len(names) != len(want) {
-		t.Fatalf("ProtoFile = %v, want %v", names, want)
-	}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Fatalf("ProtoFile = %v, want %v", names, want)
-		}
 	}
 
 	in, err := proto.Marshal(req)
