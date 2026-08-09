@@ -3,6 +3,7 @@ package resolve
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tunnelWithAC/protobuf-schema-registry/cli/internal/manifest"
@@ -65,8 +66,12 @@ func TestInstall_NoProtoFiles(t *testing.T) {
 	writeFile(t, filepath.Join(srcDir, "README.md"), "not a proto file")
 
 	m := testManifest(t, srcDir)
-	if _, err := Install(m, t.TempDir()); err == nil {
+	_, err := Install(m, t.TempDir())
+	if err == nil {
 		t.Fatal("Install() error = nil, want error for dependency with no .proto files")
+	}
+	if !strings.Contains(err.Error(), "no .proto files") {
+		t.Fatalf("Install() error = %q, want error containing %q", err.Error(), "no .proto files")
 	}
 }
 

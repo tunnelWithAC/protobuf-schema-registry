@@ -64,6 +64,9 @@ func copyProtoFiles(srcDir, destDir string) error {
 	if err := os.RemoveAll(destDir); err != nil {
 		return fmt.Errorf("clearing cache dir %q: %w", destDir, err)
 	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating cache dir %q: %w", destDir, err)
+	}
 	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
