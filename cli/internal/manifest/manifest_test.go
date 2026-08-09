@@ -136,3 +136,39 @@ func TestManifest_DependencyPath(t *testing.T) {
 		t.Errorf("DependencyPath() = %q, want %q", got, want)
 	}
 }
+
+func TestLoad_IgnoresUnknownToolchainTable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[package]
+name = "example-service"
+
+[toolchain]
+[toolchain.plugins.go]
+enabled = true
+`)
+
+	m, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+
+	if m.Package.Name != "example-service" {
+		t.Errorf("Package.Name = %q, want %q", m.Package.Name, "example-service")
+	}
+}
+
+func TestLoad_RejectsMixedPathAndVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[package]
+name = "example-service"
+
+[dependencies]
+"acme/common" = { path = "../local-proto", version = "1.0" }
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want error for dependency with both path and version")
+	}
+}
