@@ -1,0 +1,23 @@
+# Example psr.toml manifest.
+#
+# `psr` resolves the dependencies declared below and generates code from this
+# package's own .proto files plus any resolved dependencies. See `cli/` for
+# the implementation and the top-level README for CLI usage.
+
+[package]
+name        = "acme/greeting"
+version     = "0.1.0"
+description = "Example protobuf package consumed by the psr CLI"
+proto_dir   = "proto"                # directory containing this package's own .proto files
+
+# v1 of the psr CLI only supports local path dependencies (see docs/superpowers/specs/2026-08-09-psr-cli-v1-design.md).
+# Semver-range / registry dependencies (shown commented out below) aren't implemented yet.
+[dependencies]
+"acme/common"  = { path = "../acme-common-proto" }                # v1: path dependency (supported)
+# "acme/billing" = { version = "2.0.0", registry = "internal" }   # not yet supported — needs a registry client
+
+[[generate]]
+language = "go"
+out      = "gen/go"
+plugins  = ["go"]
+options  = { paths = "source_relative" }

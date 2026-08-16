@@ -15,6 +15,25 @@ Protobuf schemas are often shared across many services and repositories, but the
 - **Versioning** — packages are versioned so consumers can pin to a specific release and upgrade deliberately.
 - **Pluggable storage backends** — bring your own storage (e.g. filesystem, S3-compatible object storage, database) instead of being locked into one provider.
 
+## CLI (`psr`)
+
+A companion CLI, `psr`, resolves protobuf package dependencies declared in a `psr.toml`
+manifest and generates code from them. See [`examples/psr.toml`](examples/psr.toml) for
+the manifest format and `cli/` for the implementation.
+
+v1 supports local path dependencies only — a registry-backed dependency resolver is
+planned once the registry server exists (see [issue #3](../../issues/3)).
+
+```bash
+cd cli
+go build -o psr ./cmd/psr
+
+# From a directory containing a psr.toml:
+psr install   # resolve path dependencies into ~/.cache/psr/packages
+psr build     # install, then generate code per [[generate]] in psr.toml
+psr clean     # remove the local cache and generated output
+```
+
 ## Status
 
 This project is in early development. The core registry API, storage backend interface, and package format are still being designed. Contributions and design discussions are welcome — see the [issues](../../issues) for ongoing design work.
