@@ -81,11 +81,44 @@ func Generate(ctx context.Context, m *manifest.Manifest, target manifest.Generat
 		}
 	}
 
-	if err := os.RemoveAll(outDir); err != nil {
-		return fmt.Errorf("generate[%s]: clearing output dir %q: %w", target.Language, outDir, err)
+	if err := swapOutput(tmpDir, outDir); err != nil {
+		return fmt.Errorf("generate[%s]: %w", target.Language, err)
 	}
+	return nil
+}
+
+// swapOutput moves tmpDir into place at outDir without ever leaving outDir absent if it
+// previously held content. Any existing outDir is first renamed aside; tmpDir is then
+// renamed into outDir's place; only once that succeeds is the aside copy removed. If the
+// tmpDir -> outDir rename fails, the aside copy is restored to outDir so a failed swap
+// leaves outDir exactly as it was before this call (never deleted/empty).
+func swapOutput(tmpDir, outDir string) error {
+	var asideDir string
+	if _, err := os.Stat(outDir); err == nil {
+		asideDir = outDir + ".psr-gen-old"
+		if err := os.RemoveAll(asideDir); err != nil {
+			return fmt.Errorf("clearing stale aside dir %q: %w", asideDir, err)
+		}
+		if err := os.Rename(outDir, asideDir); err != nil {
+			return fmt.Errorf("moving existing output dir %q aside: %w", outDir, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking output dir %q: %w", outDir, err)
+	}
+
 	if err := os.Rename(tmpDir, outDir); err != nil {
-		return fmt.Errorf("generate[%s]: moving generated output into %q: %w", target.Language, outDir, err)
+		if asideDir != "" {
+			if restoreErr := os.Rename(asideDir, outDir); restoreErr != nil {
+				return fmt.Errorf("moving generated output into %q: %w (additionally failed to restore previous output from %q: %v)", outDir, err, asideDir, restoreErr)
+			}
+		}
+		return fmt.Errorf("moving generated output into %q: %w", outDir, err)
+	}
+
+	if asideDir != "" {
+		if err := os.RemoveAll(asideDir); err != nil {
+			return fmt.Errorf("generated output written to %q but failed to clean up old output at %q: %w", outDir, asideDir, err)
+		}
 	}
 	return nil
 }

@@ -87,3 +87,50 @@ message Greeting { string message = 1; }
 		t.Errorf("existing.txt should survive a failed Generate(), stat error = %v", err)
 	}
 }
+
+// TestSwapOutput_FinalRenameFailure_RestoresExistingOutput exercises the specific failure
+// mode where the initial "move outDir aside" rename succeeds but the final
+// "move tmpDir into outDir" rename then fails (e.g. tmpDir vanishing out from under us,
+// or in production an EXDEV/permissions failure). It asserts swapOutput restores the
+// original outDir contents rather than leaving outDir missing/empty, per the invariant
+// that a failed swap must never leave outDir worse off than before the call.
+//
+// A permission-based simulation (chmod'ing outDir's parent read-only) cannot isolate this
+// specific ordering: both renames operate on entries within the same parent directory
+// with the same permission bits, so any restriction that blocks the second rename would
+// also block the first, never reaching the code path under test. Instead we force the
+// second rename to fail deterministically by removing tmpDir after swapOutput has already
+// committed to using it, which is a legitimate (if synthetic) way to make os.Rename return
+// an error at that exact point without relying on platform-specific permission quirks.
+func TestSwapOutput_FinalRenameFailure_RestoresExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	writeFile(t, filepath.Join(outDir, "existing.txt"), "keep me")
+
+	tmpDir := filepath.Join(dir, ".psr-gen-tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("creating tmpDir: %v", err)
+	}
+	// Remove tmpDir out from under swapOutput so the tmpDir -> outDir rename fails
+	// with ENOENT after the outDir -> asideDir rename has already succeeded.
+	if err := os.RemoveAll(tmpDir); err != nil {
+		t.Fatalf("removing tmpDir: %v", err)
+	}
+
+	if err := swapOutput(tmpDir, outDir); err == nil {
+		t.Fatal("swapOutput() error = nil, want error for missing tmpDir")
+	}
+
+	got, err := os.ReadFile(filepath.Join(outDir, "existing.txt"))
+	if err != nil {
+		t.Fatalf("outDir should be restored after a failed swap, stat error = %v", err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored existing.txt content = %q, want %q", got, "keep me")
+	}
+
+	asideDir := outDir + ".psr-gen-old"
+	if _, err := os.Stat(asideDir); !os.IsNotExist(err) {
+		t.Errorf("aside dir %q should not remain after successful restore, stat error = %v", asideDir, err)
+	}
+}
