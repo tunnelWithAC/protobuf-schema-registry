@@ -3,7 +3,9 @@ package manifest
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -42,7 +44,11 @@ func Load(path string) (*Manifest, error) {
 	}
 
 	var m Manifest
-	if _, err := toml.Decode(string(data), &m); err != nil {
+	md, err := toml.Decode(string(data), &m)
+	if err != nil {
+		return nil, fmt.Errorf("parsing manifest %s: %w", path, err)
+	}
+	if err := checkUndecodedKeys(md); err != nil {
 		return nil, fmt.Errorf("parsing manifest %s: %w", path, err)
 	}
 
@@ -58,8 +64,30 @@ func Load(path string) (*Manifest, error) {
 	return &m, nil
 }
 
+// checkUndecodedKeys rejects any TOML key that BurntSushi's decoder left undecoded
+// (i.e. doesn't map to a Manifest struct field) unless it falls under an explicit
+// allowlist. This catches typo'd keys (e.g. "protodir" instead of "proto_dir") that
+// would otherwise be silently ignored, while still permitting the [toolchain] table
+// (parsed-but-ignored per the v1 spec) and the decorative package.description field.
+func checkUndecodedKeys(md toml.MetaData) error {
+	for _, key := range md.Undecoded() {
+		k := key.String()
+		if k == "toolchain" || strings.HasPrefix(k, "toolchain.") {
+			continue
+		}
+		if k == "package.description" {
+			continue
+		}
+		return fmt.Errorf("unknown key %q", k)
+	}
+	return nil
+}
+
 func (m *Manifest) validate() error {
 	for name, dep := range m.Dependencies {
+		if name != path.Clean(name) || path.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, `\`) {
+			return fmt.Errorf("dependency %q: name must be a clean relative path (no \"..\", no absolute paths)", name)
+		}
 		if dep.Version != "" || dep.Registry != "" {
 			return fmt.Errorf("dependency %q: version/registry dependencies aren't supported yet in v1, only { path = \"...\" } is supported", name)
 		}
@@ -67,6 +95,16 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("dependency %q: missing required \"path\" field", name)
 		}
 	}
+
+	for i, g := range m.Generate {
+		if g.Out == "" {
+			return fmt.Errorf("generate[%d]: missing required \"out\" field", i)
+		}
+		if filepath.IsAbs(g.Out) || !filepath.IsLocal(g.Out) {
+			return fmt.Errorf("generate[%d]: out %q must be a relative path inside the package directory", i, g.Out)
+		}
+	}
+
 	return nil
 }
 

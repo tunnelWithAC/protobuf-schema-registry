@@ -5,7 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/pluginpb"
 
 	"github.com/tunnelWithAC/protobuf-schema-registry/cli/internal/manifest"
 )
@@ -85,6 +89,47 @@ message Greeting { string message = 1; }
 
 	if _, err := os.Stat(filepath.Join(outDir, "existing.txt")); err != nil {
 		t.Errorf("existing.txt should survive a failed Generate(), stat error = %v", err)
+	}
+}
+
+func TestWriteFiles_RejectsInsertionPoint(t *testing.T) {
+	dir := t.TempDir()
+	files := []*pluginpb.CodeGeneratorResponse_File{
+		{
+			Name:           proto.String("greeting.pb.go"),
+			InsertionPoint: proto.String("imports"),
+			Content:        proto.String("// fragment"),
+		},
+	}
+	err := writeFiles(files, dir, "go", map[string]string{})
+	if err == nil {
+		t.Fatal("writeFiles() error = nil, want error for file with InsertionPoint set")
+	}
+	if !strings.Contains(err.Error(), "insertion point") {
+		t.Errorf("writeFiles() error = %v, want mention of insertion point", err)
+	}
+}
+
+func TestWriteFiles_RejectsCrossPluginCollision(t *testing.T) {
+	dir := t.TempDir()
+	written := map[string]string{}
+
+	goFiles := []*pluginpb.CodeGeneratorResponse_File{
+		{Name: proto.String("greeting.pb.go"), Content: proto.String("// go")},
+	}
+	if err := writeFiles(goFiles, dir, "go", written); err != nil {
+		t.Fatalf("writeFiles() first call error = %v, want nil", err)
+	}
+
+	grpcFiles := []*pluginpb.CodeGeneratorResponse_File{
+		{Name: proto.String("greeting.pb.go"), Content: proto.String("// go-grpc")},
+	}
+	err := writeFiles(grpcFiles, dir, "go-grpc", written)
+	if err == nil {
+		t.Fatal("writeFiles() error = nil, want error for filename collision across plugins")
+	}
+	if !strings.Contains(err.Error(), "greeting.pb.go") {
+		t.Errorf("writeFiles() error = %v, want mention of colliding file name", err)
 	}
 }
 

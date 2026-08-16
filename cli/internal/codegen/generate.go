@@ -71,12 +71,13 @@ func Generate(ctx context.Context, m *manifest.Manifest, target manifest.Generat
 	}
 	defer os.RemoveAll(tmpDir)
 
+	written := make(map[string]string) // generated file name -> plugin that wrote it
 	for _, plugin := range target.Plugins {
 		resp, err := RunPlugin(ctx, plugin, req)
 		if err != nil {
 			return fmt.Errorf("generate[%s]: %w", target.Language, err)
 		}
-		if err := writeFiles(resp.File, tmpDir); err != nil {
+		if err := writeFiles(resp.File, tmpDir, plugin, written); err != nil {
 			return fmt.Errorf("generate[%s]: %w", target.Language, err)
 		}
 	}
@@ -123,17 +124,33 @@ func swapOutput(tmpDir, outDir string) error {
 	return nil
 }
 
-func writeFiles(files []*pluginpb.CodeGeneratorResponse_File, destDir string) error {
+// writeFiles writes files produced by plugin into destDir. written tracks every file
+// name already written by an earlier plugin within the same [[generate]] block (keyed
+// by generated file name, valued by the plugin that wrote it) so that two plugins
+// producing the same output file name are caught as a clear collision error rather than
+// silently overwriting each other. Files with a non-empty InsertionPoint are rejected:
+// psr v1 doesn't support insertion points, and writing an insertion-point fragment as a
+// standalone file would silently corrupt (or overwrite) the real generated file.
+func writeFiles(files []*pluginpb.CodeGeneratorResponse_File, destDir, plugin string, written map[string]string) error {
 	for _, f := range files {
 		if f.Name == nil {
 			continue
 		}
-		destPath := filepath.Join(destDir, f.GetName())
+		name := f.GetName()
+		if f.GetInsertionPoint() != "" {
+			return fmt.Errorf("plugin %q: file %q uses insertion point %q, which psr v1 does not support", plugin, name, f.GetInsertionPoint())
+		}
+		if prevPlugin, ok := written[name]; ok {
+			return fmt.Errorf("output file %q written by both plugin %q and plugin %q", name, prevPlugin, plugin)
+		}
+		written[name] = plugin
+
+		destPath := filepath.Join(destDir, name)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return fmt.Errorf("creating output dir for %q: %w", f.GetName(), err)
+			return fmt.Errorf("creating output dir for %q: %w", name, err)
 		}
 		if err := os.WriteFile(destPath, []byte(f.GetContent()), 0o644); err != nil {
-			return fmt.Errorf("writing generated file %q: %w", f.GetName(), err)
+			return fmt.Errorf("writing generated file %q: %w", name, err)
 		}
 	}
 	return nil

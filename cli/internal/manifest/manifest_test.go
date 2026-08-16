@@ -158,6 +158,95 @@ enabled = true
 	}
 }
 
+func TestLoad_RejectsDependencyNameTraversal(t *testing.T) {
+	cases := []string{`"../escape"`, `"a/../.."`, `".."`}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeManifest(t, dir, `
+[dependencies]
+`+name+` = { path = "../local-proto" }
+`)
+			if _, err := Load(path); err == nil {
+				t.Fatalf("Load() error = nil, want error for path-traversal dependency name %s", name)
+			}
+		})
+	}
+}
+
+func TestLoad_AcceptsNormalDependencyName(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[dependencies]
+"acme/common" = { path = "../local-proto" }
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want nil for normal dependency name", err)
+	}
+}
+
+func TestLoad_RejectsGenerateOutTraversal(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[[generate]]
+language = "go"
+out = "../SIBLING"
+plugins = ["go"]
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want error for out = \"../SIBLING\"")
+	}
+}
+
+func TestLoad_RejectsGenerateOutEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[[generate]]
+language = "go"
+plugins = ["go"]
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want error for missing out field")
+	}
+}
+
+func TestLoad_AcceptsNormalGenerateOut(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[[generate]]
+language = "go"
+out = "gen/go"
+plugins = ["go"]
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want nil for out = \"gen/go\"", err)
+	}
+}
+
+func TestLoad_RejectsUnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[package]
+name = "example-service"
+protodir = "proto"
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want error for typo'd key \"protodir\"")
+	}
+}
+
+func TestLoad_AcceptsPackageDescription(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+[package]
+name = "example-service"
+description = "a decorative description"
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want nil for package.description", err)
+	}
+}
+
 func TestLoad_RejectsMixedPathAndVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := writeManifest(t, dir, `
