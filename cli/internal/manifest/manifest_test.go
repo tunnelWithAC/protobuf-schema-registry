@@ -198,6 +198,21 @@ plugins = ["go"]
 	}
 }
 
+func TestLoad_RejectsGenerateOutEqualToPackageDir(t *testing.T) {
+	for _, out := range []string{".", "gen/..", "gen/../."} {
+		dir := t.TempDir()
+		path := writeManifest(t, dir, `
+[[generate]]
+language = "go"
+out = "`+out+`"
+plugins = ["go"]
+`)
+		if _, err := Load(path); err == nil {
+			t.Errorf("Load() error = nil for out = %q, want error (out must not resolve to the package directory itself)", out)
+		}
+	}
+}
+
 func TestLoad_RejectsGenerateOutEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := writeManifest(t, dir, `

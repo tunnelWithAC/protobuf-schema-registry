@@ -100,8 +100,8 @@ func (m *Manifest) validate() error {
 		if g.Out == "" {
 			return fmt.Errorf("generate[%d]: missing required \"out\" field", i)
 		}
-		if filepath.IsAbs(g.Out) || !filepath.IsLocal(g.Out) {
-			return fmt.Errorf("generate[%d]: out %q must be a relative path inside the package directory", i, g.Out)
+		if filepath.IsAbs(g.Out) || !filepath.IsLocal(g.Out) || filepath.Clean(g.Out) == "." {
+			return fmt.Errorf("generate[%d]: out %q must be a relative path inside the package directory, not the package directory itself", i, g.Out)
 		}
 	}
 
