@@ -1,0 +1,157 @@
+package codegen
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/pluginpb"
+
+	"github.com/tunnelWithAC/protobuf-schema-registry/cli/internal/manifest"
+	"github.com/tunnelWithAC/protobuf-schema-registry/cli/internal/toolchain"
+)
+
+// RunPlugin sends req to the protoc-gen-<plugin> binary found on PATH and returns its
+// parsed response. It returns an error if the binary is missing, exits non-zero, or
+// reports a generation error via CodeGeneratorResponse.Error.
+func RunPlugin(ctx context.Context, plugin string, req *pluginpb.CodeGeneratorRequest) (*pluginpb.CodeGeneratorResponse, error) {
+	binPath, err := toolchain.Find(plugin)
+	if err != nil {
+		return nil, err
+	}
+
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request for plugin %q: %w", plugin, err)
+	}
+
+	cmd := exec.CommandContext(ctx, binPath)
+	cmd.Stdin = bytes.NewReader(reqBytes)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("running plugin %q: %w (stderr: %s)", plugin, err, stderr.String())
+	}
+
+	var resp pluginpb.CodeGeneratorResponse
+	if err := proto.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		return nil, fmt.Errorf("parsing response from plugin %q: %w", plugin, err)
+	}
+	if resp.Error != nil && *resp.Error != "" {
+		return nil, fmt.Errorf("plugin %q reported error: %s", plugin, *resp.Error)
+	}
+
+	return &resp, nil
+}
+
+// Generate compiles target's language sources and runs every plugin listed in
+// target.Plugins, writing their combined output into target.Out (relative to m.Dir).
+// Output is staged in a temp directory and only moved into place once every plugin has
+// succeeded, so a failed generate leaves any existing out directory untouched.
+func Generate(ctx context.Context, m *manifest.Manifest, target manifest.GenerateTarget, importPaths []string) error {
+	parameter := encodeParameter(target.Options)
+
+	req, err := BuildRequest(ctx, m.ProtoDir(), importPaths, parameter)
+	if err != nil {
+		return fmt.Errorf("generate[%s]: %w", target.Language, err)
+	}
+
+	outDir := filepath.Join(m.Dir, target.Out)
+	if err := os.MkdirAll(filepath.Dir(outDir), 0o755); err != nil {
+		return fmt.Errorf("generate[%s]: creating parent of output dir %q: %w", target.Language, outDir, err)
+	}
+	tmpDir, err := os.MkdirTemp(filepath.Dir(outDir), ".psr-gen-*")
+	if err != nil {
+		return fmt.Errorf("generate[%s]: creating temp output dir: %w", target.Language, err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	written := make(map[string]string) // generated file name -> plugin that wrote it
+	for _, plugin := range target.Plugins {
+		resp, err := RunPlugin(ctx, plugin, req)
+		if err != nil {
+			return fmt.Errorf("generate[%s]: %w", target.Language, err)
+		}
+		if err := writeFiles(resp.File, tmpDir, plugin, written); err != nil {
+			return fmt.Errorf("generate[%s]: %w", target.Language, err)
+		}
+	}
+
+	if err := swapOutput(tmpDir, outDir); err != nil {
+		return fmt.Errorf("generate[%s]: %w", target.Language, err)
+	}
+	return nil
+}
+
+// swapOutput moves tmpDir into place at outDir without ever leaving outDir absent if it
+// previously held content. Any existing outDir is first renamed aside; tmpDir is then
+// renamed into outDir's place; only once that succeeds is the aside copy removed. If the
+// tmpDir -> outDir rename fails, the aside copy is restored to outDir so a failed swap
+// leaves outDir exactly as it was before this call (never deleted/empty).
+func swapOutput(tmpDir, outDir string) error {
+	var asideDir string
+	if _, err := os.Stat(outDir); err == nil {
+		asideDir = outDir + ".psr-gen-old"
+		if err := os.RemoveAll(asideDir); err != nil {
+			return fmt.Errorf("clearing stale aside dir %q: %w", asideDir, err)
+		}
+		if err := os.Rename(outDir, asideDir); err != nil {
+			return fmt.Errorf("moving existing output dir %q aside: %w", outDir, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking output dir %q: %w", outDir, err)
+	}
+
+	if err := os.Rename(tmpDir, outDir); err != nil {
+		if asideDir != "" {
+			if restoreErr := os.Rename(asideDir, outDir); restoreErr != nil {
+				return fmt.Errorf("moving generated output into %q: %w (additionally failed to restore previous output from %q: %v)", outDir, err, asideDir, restoreErr)
+			}
+		}
+		return fmt.Errorf("moving generated output into %q: %w", outDir, err)
+	}
+
+	if asideDir != "" {
+		if err := os.RemoveAll(asideDir); err != nil {
+			return fmt.Errorf("generated output written to %q but failed to clean up old output at %q: %w", outDir, asideDir, err)
+		}
+	}
+	return nil
+}
+
+// writeFiles writes files produced by plugin into destDir. written tracks every file
+// name already written by an earlier plugin within the same [[generate]] block (keyed
+// by generated file name, valued by the plugin that wrote it) so that two plugins
+// producing the same output file name are caught as a clear collision error rather than
+// silently overwriting each other. Files with a non-empty InsertionPoint are rejected:
+// psr v1 doesn't support insertion points, and writing an insertion-point fragment as a
+// standalone file would silently corrupt (or overwrite) the real generated file.
+func writeFiles(files []*pluginpb.CodeGeneratorResponse_File, destDir, plugin string, written map[string]string) error {
+	for _, f := range files {
+		if f.Name == nil {
+			continue
+		}
+		name := f.GetName()
+		if f.GetInsertionPoint() != "" {
+			return fmt.Errorf("plugin %q: file %q uses insertion point %q, which psr v1 does not support", plugin, name, f.GetInsertionPoint())
+		}
+		if prevPlugin, ok := written[name]; ok {
+			return fmt.Errorf("output file %q written by both plugin %q and plugin %q", name, prevPlugin, plugin)
+		}
+		written[name] = plugin
+
+		destPath := filepath.Join(destDir, name)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return fmt.Errorf("creating output dir for %q: %w", name, err)
+		}
+		if err := os.WriteFile(destPath, []byte(f.GetContent()), 0o644); err != nil {
+			return fmt.Errorf("writing generated file %q: %w", name, err)
+		}
+	}
+	return nil
+}
